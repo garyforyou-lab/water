@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HydroTrack</title>
+<meta name="theme-color" content="#0A6C85">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="喝水">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+/* Layout: one narrow column. A sign-in card first, then the same vessel / quick-add / log layout as the Claude version, with 7-day and 30-day chart tabs. */
+:root {
+  --bg: #F4F7F7; --surface: #FFFFFF; --ink: #11262D; --muted: #566D75; --line: #D7E2E4;
+  --accent: #0A6C85; --accent-ink: #FFFFFF; --water: #1C9BBE; --water-back: #8FD3E6;
+  --good: #1F7A52; --track: #DCE8EA; --warn: #9A5B00; --bad: #B3261E;
+  --font-display: "Sora", system-ui, -apple-system, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --font-body: system-ui, -apple-system, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0A171C; --surface: #112228; --ink: #E6F1F3; --muted: #8FA7AF; --line: #1F3840;
+    --accent: #4CC3E0; --accent-ink: #05222B; --water: #2AA8CC; --water-back: #1B5E73;
+    --good: #4FCB94; --track: #1A3139; --warn: #E0A84A; --bad: #FF8A80; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+  padding-inline: 16px; padding-top: calc(env(safe-area-inset-top, 0px) + 16px); padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 40px); -webkit-tap-highlight-color: transparent; }
+.app { max-width: 440px; margin-inline: auto; display: flex; flex-direction: column; gap: 18px; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.top h1 { margin: 0; font-family: var(--font-display); font-size: 20px; }
+.top .date { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.chip[data-s="ok"] i { background: var(--good); }
+.chip[data-s="ok"] { color: var(--ink); }
+.chip[data-s="wait"] i { background: var(--warn); }
+
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; gap: 4px; background: var(--track); border-radius: 12px; }
+.tabs button { border: 0; background: transparent; padding: 10px 6px; border-radius: 9px; min-height: 44px; color: var(--muted); font-weight: 600; }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+.vessel { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.vessel svg { width: min(250px, 72vw); height: auto; display: block; }
+.ring { fill: var(--surface); stroke: var(--line); stroke-width: 3; }
+.wave-front { fill: var(--water); }
+.wave-back { fill: var(--water-back); opacity: .75; }
+.lvl { transition: transform .9s cubic-bezier(.3,.7,.2,1); }
+.w1 { animation: drift 7s linear infinite; }
+.w2 { animation: drift 11s linear infinite reverse; }
+@keyframes drift { from { transform: translateX(0); } to { transform: translateX(-100px); } }
+@media (prefers-reduced-motion: reduce) { .w1, .w2 { animation: none; } .lvl { transition: none; } }
+.readout { text-align: center; }
+.readout .big { font-family: var(--font-display); font-weight: 700; font-size: 40px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.readout .big small { font-size: 16px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.readout .sub { color: var(--muted); font-size: 14px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.fact { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.fact span { display: block; font-size: 12px; color: var(--muted); }
+.fact b { font-family: var(--font-display); font-size: 18px; font-variant-numeric: tabular-nums; }
+
+.add { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.add button { min-height: 56px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-weight: 700; font-variant-numeric: tabular-nums; }
+.add button:active { transform: scale(.97); }
+.add button small { display: block; font-weight: 500; font-size: 11px; color: var(--muted); }
+.row2 { display: flex; gap: 8px; }
+.row2 input { flex: 1; min-width: 0; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); padding-inline: 12px; }
+.btn { min-height: 44px; padding-inline: 16px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.btn.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.panel h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.log .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.log .row:first-child { border-top: 0; }
+.log .amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+.log .tm { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; margin-left: 10px; }
+.del { border: 1px solid transparent; background: transparent; border-radius: 8px; min-height: 36px; min-width: 44px; color: var(--muted); font-size: 13px; }
+.del[data-armed="1"] { border-color: var(--warn); color: var(--warn); font-weight: 700; }
+.empty { color: var(--muted); font-size: 14px; margin: 0; }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.chartbox svg { width: 100%; height: auto; display: block; }
+.axis text { fill: var(--muted); font-size: 10px; font-family: var(--font-body); }
+.axis .goal { stroke: var(--accent); stroke-dasharray: 4 3; stroke-width: 1; }
+.axis .base { stroke: var(--line); stroke-width: 1; }
+.bar { fill: var(--water-back); }
+.bar.hit { fill: var(--water); }
+.val { fill: var(--ink); font-size: 10px; font-family: var(--font-body); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; background: var(--water-back); vertical-align: -1px; }
+.legend span.hit::before { background: var(--water); }
+
+.auth { margin-top: 8vh; gap: 14px; }
+.auth h2 { margin: 0; font-family: var(--font-display); font-size: 22px; }
+.auth p { margin: 0; color: var(--muted); }
+.field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.field input { width: 100%; min-height: 46px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); padding-inline: 12px; }
+.msg { font-size: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
+.msg.err { color: var(--bad); border-color: var(--bad); }
+.msg.ok { color: var(--good); border-color: var(--good); }
+.linkbtn { background: none; border: 0; color: var(--accent); font-weight: 600; padding: 8px 0; min-height: 44px; text-align: left; }
+
+details.settings { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+details.settings summary { padding: 14px; cursor: pointer; font-weight: 600; min-height: 44px; }
+details.settings .body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.body label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+.note { font-size: 13px; color: var(--muted); margin: 0; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top, 0px) + 14px); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .25s; max-width: calc(100vw - 32px); z-index: 20; }
+.toast.on { opacity: 1; }
+#fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15; }
+</style>
+</head>
+<body>
+
+<!-- Sign-in -->
+<div class="app auth" id="auth" hidden>
+  <h2>HydroTrack</h2>
+  <p>每個人用自己的帳號登入，紀錄各自分開，家人看不到你的。</p>
+  <form class="app" style="gap:12px" id="auth-form">
+    <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+    <div class="field"><label for="pw">密碼（至少 6 個字元）</label><input id="pw" type="password" autocomplete="current-password" minlength="6" required></div>
+    <div class="msg" id="auth-msg" hidden></div>
+    <button class="btn" type="submit" id="auth-submit">登入</button>
+    <button class="linkbtn" type="button" id="auth-switch">第一次使用？建立帳號</button>
+  </form>
+</div>
+
+<!-- Main -->
+<div class="app" id="main" hidden>
+  <header class="top">
+    <div>
+      <h1>HydroTrack</h1>
+      <p class="date" id="date"></p>
+    </div>
+    <span class="chip" id="chip" data-s="wait"><i></i><span id="chip-t">連線中</span></span>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="t-today" aria-selected="true" data-tab="today">今日</button>
+    <button role="tab" id="t-week" aria-selected="false" data-tab="week">7 天</button>
+    <button role="tab" id="t-month" aria-selected="false" data-tab="month">30 天</button>
+  </div>
+
+  <section id="v-today" class="app">
+    <div class="vessel">
+      <svg viewBox="0 0 200 200" role="img" aria-label="今日喝水進度">
+        <defs><clipPath id="clip"><circle cx="100" cy="100" r="95"/></clipPath></defs>
+        <circle class="ring" cx="100" cy="100" r="97"/>
+        <g clip-path="url(#clip)">
+          <g class="lvl" id="lvl-back" style="transform:translateY(205px)"><g class="w2"><path class="wave-back" d="M-100 8 Q-75 -2 -50 8 T0 8 T50 8 T100 8 T150 8 T200 8 T250 8 T300 8 V260 H-100Z"/></g></g>
+          <g class="lvl" id="lvl-front" style="transform:translateY(205px)"><g class="w1"><path class="wave-front" d="M-100 8 Q-75 -2 -50 8 T0 8 T50 8 T100 8 T150 8 T200 8 T250 8 T300 8 V260 H-100Z"/></g></g>
+        </g>
+      </svg>
+      <div class="readout">
+        <div class="big"><span id="today-ml">0</span><small>ml</small></div>
+        <div class="sub" id="today-sub">目標 2,000 ml · 0%</div>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="fact"><span>還需要</span><b id="remain">2,000 ml</b></div>
+      <div class="fact"><span>連續達標</span><b id="streak">0 天</b></div>
+    </div>
+    <div class="add" id="quick"></div>
+    <form class="row2" id="custom-form">
+      <input id="custom-ml" type="number" inputmode="numeric" min="1" max="3000" placeholder="自訂毫升數，例如 220" aria-label="自訂毫升數">
+      <button class="btn" type="submit">加入</button>
+    </form>
+    <div class="panel">
+      <h2><span>今天的紀錄</span><span id="log-count">0 筆</span></h2>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <section id="v-week" class="app" hidden>
+    <div class="stats">
+      <div class="fact"><span>7 天總量</span><b id="w-total">0 L</b></div>
+      <div class="fact"><span>日均</span><b id="w-avg">0 ml</b></div>
+      <div class="fact"><span>達標天數</span><b id="w-hit">0 / 7</b></div>
+    </div>
+    <div class="panel">
+      <h2><span>最近 7 天（含今天）</span></h2>
+      <div class="chartbox" id="w-chart"></div>
+      <div class="legend"><span class="hit">達標</span><span>未達標</span></div>
+    </div>
+  </section>
+
+  <section id="v-month" class="app" hidden>
+    <div class="stats">
+      <div class="fact"><span>30 天總量</span><b id="m-total">0 L</b></div>
+      <div class="fact"><span>達標天數</span><b id="m-hit">0 / 30</b></div>
+      <div class="fact"><span>單日最高</span><b id="m-max">0 ml</b></div>
+    </div>
+    <div class="panel">
+      <h2><span>最近 30 天（含今天）</span></h2>
+      <div class="chartbox" id="m-chart"></div>
+      <div class="legend"><span class="hit">達標</span><span>未達標</span></div>
+    </div>
+  </section>
+
+  <details class="settings" id="settings">
+    <summary>設定與帳號</summary>
+    <div class="body">
+      <div>
+        <label for="goal">每日目標（毫升）</label>
+        <div class="row2">
+          <input id="goal" type="number" inputmode="numeric" min="500" max="10000" step="100">
+          <button class="btn" id="goal-save" type="button">儲存</button>
+        </div>
+      </div>
+      <p class="note" id="who"></p>
+      <button class="btn quiet" id="logout" type="button">登出</button>
+    </div>
+  </details>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<canvas id="fx"></canvas>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+<script>
+if ("serviceWorker" in navigator) { window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); }); }
+</script>
+</body>
+</html>
