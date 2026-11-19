@@ -4,6 +4,7 @@
   var LS_PREFIX = "hydrotrack_v4_";
   var sb = null, user = null;
   var state = { goal: 2000, logs: {}, queue: [] };   // logs: id -> {id, ts, ml}   queue: pending ops not yet in the cloud
+  var lastErr = "";
   var tab = "today", curKey = "", signUpMode = false, flushing = false;
   var $ = function (id) { return document.getElementById(id); };
 
@@ -54,7 +55,7 @@
   function setChip(s, txt) { $("chip").setAttribute("data-s", s); $("chip-t").textContent = txt; }
   function refreshChip() {
     if (!navigator.onLine) return setChip("wait", state.queue.length ? "離線，" + state.queue.length + " 筆待上傳" : "離線");
-    if (state.queue.length) return setChip("wait", state.queue.length + " 筆待上傳");
+    if (state.queue.length) return setChip("wait", state.queue.length + (lastErr ? " 筆上傳失敗" : " 筆待上傳"));
     setChip("ok", "已同步");
   }
   async function flush() {
@@ -67,12 +68,15 @@
         else if (op.t === "del") res = await sb.from("drink_logs").delete().eq("id", op.id);
         else if (op.t === "goal") res = await sb.from("drink_settings").upsert({ user_id: user.id, goal: op.goal }, { onConflict: "user_id" });
         else { state.queue.shift(); continue; }
-        if (res.error) { if (res.error.code && String(res.error.code).indexOf("PGRST3") === 0 || res.status === 401) break; if (res.status >= 400 && res.status < 500) { state.queue.shift(); continue; } break; }
-        state.queue.shift(); saveLocal();
+        if (res.error) { lastErr = (res.error.message || "error") + (res.error.code ? " [" + res.error.code + "]" : "") + " (" + res.status + ")"; break; }
+        if (op.t === "add") state.logs[op.log.id] = op.log;
+        else if (op.t === "del") delete state.logs[op.id];
+        state.queue.shift(); lastErr = ""; saveLocal();
       }
-    } catch (e) {}
+    } catch (e) { lastErr = (e && e.message) || "exception"; }
     flushing = false;
     refreshChip();
+    if (lastErr && state.queue.length) toast("上傳失敗：" + lastErr.slice(0, 80));
   }
   async function pull() {
     if (!sb || !user || !navigator.onLine) return;
@@ -80,7 +84,7 @@
       var since = new Date(); since.setDate(since.getDate() - 400);
       var a = await sb.from("drink_logs").select("id,ml,ts").gte("ts", since.toISOString()).order("ts", { ascending: true }).limit(20000);
       var b = await sb.from("drink_settings").select("goal").maybeSingle();
-      if (a.error) { setChip("wait", "同步失敗"); return; }
+      if (a.error) { setChip("wait", "同步失敗"); toast("同步失敗：" + (a.error.message || "").slice(0, 80)); return; }
       var logs = {};
       a.data.forEach(function (r) { logs[r.id] = { id: r.id, ml: r.ml, ts: new Date(r.ts).getTime() }; });
       state.logs = logs;
