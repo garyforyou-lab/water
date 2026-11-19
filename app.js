@@ -4,8 +4,8 @@
   var LS_PREFIX = "hydrotrack_v4_";
   var sb = null, user = null;
   var state = { goal: 2000, logs: {}, queue: [] };   // logs: id -> {id, ts, ml}   queue: pending ops not yet in the cloud
-  var lastErr = "";
-  var tab = "today", curKey = "", signUpMode = false, flushing = false;
+  var tab = "today", curKey = "", signUpMode = false;
+  var flushErr = false, pullErr = false, lastOk = 0, chain = Promise.resolve();
   var $ = function (id) { return document.getElementById(id); };
 
   /* ---------- date helpers (local time) ---------- */
@@ -55,17 +55,16 @@
   function setChip(s, txt) { $("chip").setAttribute("data-s", s); $("chip-t").textContent = txt; }
   function refreshChip() {
     if (!navigator.onLine) return setChip("wait", state.queue.length ? "離線，" + state.queue.length + " 筆待上傳" : "離線");
-    if (state.queue.length) return setChip("wait", state.queue.length + (lastErr ? " 筆上傳失敗" : " 筆待上傳"));
-    setChip("ok", "已同步");
+    if (flushErr || pullErr) return setChip("wait", "同步失敗，點此重試");
+    if (state.queue.length) return setChip("wait", state.queue.length + " 筆待上傳");
+    setChip("ok", lastOk ? "已同步 " + timeOf(lastOk) : "已同步");
   }
-  // flush 與 pull 排隊執行，避免「拉到舊快照」蓋掉剛上傳的紀錄
-  var chain = Promise.resolve();
-  function exclusive(fn) { var p = chain.then(fn, fn); chain = p.catch(function () {}); return p; }
-  function flush() { return exclusive(flushNow); }
-  function pull() { return exclusive(pullNow); }
+  // All cloud work runs one-at-a-time, so a pull can never overlap (and overwrite) an upload.
+  function run(fn) { chain = chain.then(fn, fn); return chain; }
+  function flush() { return run(flushNow); }
   async function flushNow() {
     if (!sb || !user || !navigator.onLine) return;
-    flushing = true;
+    var failed = false;
     try {
       while (state.queue.length) {
         var op = state.queue[0], res;
@@ -73,35 +72,46 @@
         else if (op.t === "del") res = await sb.from("drink_logs").delete().eq("id", op.id);
         else if (op.t === "goal") res = await sb.from("drink_settings").upsert({ user_id: user.id, goal: op.goal }, { onConflict: "user_id" });
         else { state.queue.shift(); continue; }
-        if (res.error) { lastErr = (res.error.message || "error") + (res.error.code ? " [" + res.error.code + "]" : "") + " (" + res.status + ")"; break; }
-        var idx = state.queue.indexOf(op);
-        if (op.t === "add") {
-          if (idx >= 0) state.logs[op.log.id] = op.log;
-          else state.queue.push({ t: "del", id: op.log.id });   // 上傳途中被刪掉，補一筆雲端刪除
-        } else if (op.t === "del") delete state.logs[op.id];
-        if (idx >= 0) state.queue.splice(idx, 1);
-        lastErr = ""; saveLocal();
+        // Any error: keep the op in the queue and retry later. Never drop a record silently.
+        if (res.error) { failed = true; break; }
+        if (op.t === "add") state.logs[op.log.id] = op.log;      // keep the local copy in step with the cloud
+        else if (op.t === "del") delete state.logs[op.id];
+        state.queue.shift(); saveLocal();
       }
-    } catch (e) { lastErr = (e && e.message) || "exception"; }
-    flushing = false;
+    } catch (e) { failed = true; }
+    flushErr = failed;
     refreshChip();
-    if (lastErr && state.queue.length) toast("上傳失敗：" + lastErr.slice(0, 80));
   }
   async function pullNow() {
     if (!sb || !user || !navigator.onLine) return;
     try {
       var since = new Date(); since.setDate(since.getDate() - 400);
-      var a = await sb.from("drink_logs").select("id,ml,ts").gte("ts", since.toISOString()).order("ts", { ascending: true }).limit(20000);
+      var rows = [], from = 0, PAGE = 500;
+      while (true) {   // page through, because the server caps how many rows one request returns
+        var a = await sb.from("drink_logs").select("id,ml,ts").gte("ts", since.toISOString()).order("ts", { ascending: true }).order("id", { ascending: true }).range(from, from + PAGE - 1);
+        if (a.error) { pullErr = true; refreshChip(); return; }
+        rows = rows.concat(a.data || []);
+        if (!a.data || a.data.length < PAGE || rows.length >= 50000) break;
+        from += PAGE;
+      }
       var b = await sb.from("drink_settings").select("goal").maybeSingle();
-      if (a.error) { setChip("wait", "同步失敗"); toast("同步失敗：" + (a.error.message || "").slice(0, 80)); return; }
       var logs = {};
-      a.data.forEach(function (r) { logs[r.id] = { id: r.id, ml: r.ml, ts: new Date(r.ts).getTime() }; });
+      rows.forEach(function (r) { logs[r.id] = { id: r.id, ml: r.ml, ts: new Date(r.ts).getTime() }; });
       state.logs = logs;
       if (b && b.data && typeof b.data.goal === "number") state.goal = b.data.goal;
+      pullErr = false; lastOk = Date.now();
       saveLocal(); render(); refreshChip();
-    } catch (e) { setChip("wait", "同步失敗"); }
+    } catch (e) { pullErr = true; refreshChip(); }
   }
-  async function syncAll() { await flush(); await pull(); await flush(); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function syncAll() {
+    return run(async function () {
+      await flushNow();
+      await pullNow();
+      if (pullErr && navigator.onLine) { await sleep(2500); await pullNow(); }   // phones often need a moment after waking
+      await flushNow();
+    });
+  }
 
   /* ---------- actions ---------- */
   function addLog(ml) {
@@ -299,6 +309,8 @@
     $("custom-form").addEventListener("submit", function (e) { e.preventDefault(); addLog(parseInt($("custom-ml").value, 10)); $("custom-ml").value = ""; });
     $("goal-save").addEventListener("click", saveGoal);
     $("settings").addEventListener("toggle", function () { if ($("settings").open) $("goal").value = state.goal; });
+    $("chip").style.cursor = "pointer";
+    $("chip").addEventListener("click", function () { if (user) { toast("同步中…"); syncAll(); } });
     $("auth-form").addEventListener("submit", onAuthSubmit);
     $("auth-switch").addEventListener("click", function () { setMode(!signUpMode); });
     $("logout").addEventListener("click", async function () { try { await sb.auth.signOut(); } catch (e) {} user = null; showAuth(); });
