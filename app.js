@@ -58,8 +58,13 @@
     if (state.queue.length) return setChip("wait", state.queue.length + (lastErr ? " 筆上傳失敗" : " 筆待上傳"));
     setChip("ok", "已同步");
   }
-  async function flush() {
-    if (!sb || !user || flushing || !navigator.onLine) return;
+  // flush 與 pull 排隊執行，避免「拉到舊快照」蓋掉剛上傳的紀錄
+  var chain = Promise.resolve();
+  function exclusive(fn) { var p = chain.then(fn, fn); chain = p.catch(function () {}); return p; }
+  function flush() { return exclusive(flushNow); }
+  function pull() { return exclusive(pullNow); }
+  async function flushNow() {
+    if (!sb || !user || !navigator.onLine) return;
     flushing = true;
     try {
       while (state.queue.length) {
@@ -69,16 +74,20 @@
         else if (op.t === "goal") res = await sb.from("drink_settings").upsert({ user_id: user.id, goal: op.goal }, { onConflict: "user_id" });
         else { state.queue.shift(); continue; }
         if (res.error) { lastErr = (res.error.message || "error") + (res.error.code ? " [" + res.error.code + "]" : "") + " (" + res.status + ")"; break; }
-        if (op.t === "add") state.logs[op.log.id] = op.log;
-        else if (op.t === "del") delete state.logs[op.id];
-        state.queue.shift(); lastErr = ""; saveLocal();
+        var idx = state.queue.indexOf(op);
+        if (op.t === "add") {
+          if (idx >= 0) state.logs[op.log.id] = op.log;
+          else state.queue.push({ t: "del", id: op.log.id });   // 上傳途中被刪掉，補一筆雲端刪除
+        } else if (op.t === "del") delete state.logs[op.id];
+        if (idx >= 0) state.queue.splice(idx, 1);
+        lastErr = ""; saveLocal();
       }
     } catch (e) { lastErr = (e && e.message) || "exception"; }
     flushing = false;
     refreshChip();
     if (lastErr && state.queue.length) toast("上傳失敗：" + lastErr.slice(0, 80));
   }
-  async function pull() {
+  async function pullNow() {
     if (!sb || !user || !navigator.onLine) return;
     try {
       var since = new Date(); since.setDate(since.getDate() - 400);
